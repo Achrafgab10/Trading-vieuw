@@ -159,9 +159,9 @@ with tab2:
             seq2 = df[(df['Time'] >= start2) & (df['Time'] <= end2)].copy()
 
             if seq1.empty or seq2.empty:
-                st.error("❌ Une des séquences est vide. Vérifiez les plages de dates/horaires.")
+                st.error(" Une des séquences est vide. Vérifiez les plages de dates/horaires.")
             elif len(seq1) != len(seq2):
-                st.error(f"❌ Les séquences doivent avoir le même nombre de points (actuel : {len(seq1)} vs {len(seq2)}).")
+                st.error(f" Les séquences doivent avoir le même nombre de points (actuel : {len(seq1)} vs {len(seq2)}).")
             else:
                 similarity_ratio = (seq1['Close'].round(2).values == seq2['Close'].round(2).values).mean()
                 similarity_percent = round(similarity_ratio * 100, 2)
