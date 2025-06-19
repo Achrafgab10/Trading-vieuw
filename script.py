@@ -1,19 +1,20 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 st.set_page_config(layout="wide")
 st.markdown("<h1 style='text-align:center;'>BEOM Trading Tools</h1>", unsafe_allow_html=True)
 
-# ------------------- Chargement direct du fichier -------------------
+
 @st.cache_data
 def load_data():
     df = pd.read_csv("data_cleaned.csv", sep=';', skiprows=1, names=['Time', 'Open', 'High', 'Low', 'Close'], usecols=range(5))
     df['Time'] = pd.to_datetime(df['Time'], format='%d.%m.%Y %H:%M', errors='coerce')
     df.dropna(inplace=True)
     df.sort_values('Time', inplace=True)
-    return df
+    return df.reset_index(drop=True)
 
 def resample_data(df, interval):
     rule = {
@@ -34,10 +35,10 @@ def resample_data(df, interval):
 
 df = load_data()
 
-# ------------------- Tabs -------------------
-tab1, tab2 = st.tabs(["Trading View", "Comparer Séquences"])
 
-# ------------------- Tab 1 -------------------
+tab1, tab2, tab3 = st.tabs(["Trading View", "Comparer Séquences", "Pattern Finder"])
+
+
 with tab1:
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -73,7 +74,7 @@ with tab1:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-# ------------------- Tab 2 -------------------
+
 with tab2:
     st.subheader("Comparer Deux Séquences")
 
@@ -109,3 +110,60 @@ with tab2:
         else:
             similarity = (seq1['Close'].round(2).values == seq2['Close'].round(2).values).mean() * 100
             st.success(f"Similarité entre les séquences : {similarity:.2f} %")
+
+
+with tab3:
+    st.subheader("🔍 Recherche de Séquences Similaires")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        date_start = st.date_input("Date début motif", value=datetime(2024, 1, 12).date())
+        time_start = st.time_input("Heure début motif", value=datetime.strptime("14:20", "%H:%M").time())
+    with col2:
+        date_end = st.date_input("Date fin motif", value=datetime(2024, 1, 12).date())
+        time_end = st.time_input("Heure fin motif", value=datetime.strptime("14:30", "%H:%M").time())
+
+    start_ts = datetime.combine(date_start, time_start)
+    end_ts = datetime.combine(date_end, time_end)
+
+    pattern_df = df[(df['Time'] >= start_ts) & (df['Time'] <= end_ts)].copy()
+
+    if len(pattern_df) < 2:
+        st.error("Séquence trop courte ou inexistante.")
+        st.stop()
+
+    st.markdown(f"**⏱ Durée du motif :** {len(pattern_df)} points")
+
+    similarity_threshold = st.slider("Seuil de similarité (%)", 0, 100, 60)
+
+    pattern_close = pattern_df['Close'].values
+    sequence_length = len(pattern_close)
+
+    st.markdown("---")
+    st.markdown("### 🔎 Séquences similaires trouvées")
+
+    results = []
+    i = 0
+    while i + sequence_length <= len(df):
+        window = df.iloc[i:i+sequence_length]
+        if window['Time'].iloc[0] == start_ts:
+            i += 1
+            continue
+
+        compare_close = window['Close'].values
+        # Calcul de la corrélation entre pattern et la fenêtre
+        corr = np.corrcoef(pattern_close, compare_close)[0, 1]
+
+        if corr >= similarity_threshold / 100:  # seuil entre 0 et 1
+            results.append({
+                "start": window['Time'].iloc[0],
+                "end": window['Time'].iloc[-1],
+                "similarity": round(corr * 100, 2)
+            })
+        i += 1
+
+    if results:
+        res_df = pd.DataFrame(results)
+        st.dataframe(res_df, use_container_width=True)
+    else:
+        st.warning("Aucune séquence similaire trouvée pour ce seuil.")
