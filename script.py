@@ -112,58 +112,127 @@ with tab2:
             st.success(f"Similarité entre les séquences : {similarity:.2f} %")
 
 
-with tab3:
-    st.subheader("🔍 Recherche de Séquences Similaires")
 
+with tab3:
+    st.subheader(" Pattern Finder — Détection de Formes Similaires")
+
+    # Inputs utilisateur avec clés uniques
     col1, col2 = st.columns(2)
     with col1:
-        date_start = st.date_input("Date début motif", value=datetime(2024, 1, 12).date())
-        time_start = st.time_input("Heure début motif", value=datetime.strptime("14:20", "%H:%M").time())
+        pattern_start_date = st.date_input(
+            " Date de début du motif",
+            value=datetime(2024, 1, 12).date(),
+            key="pattern_start_date"
+        )
+        n_candles = st.number_input(
+            " Nombre de chandelles",
+            min_value=3, max_value=200, value=10,
+            key="pattern_n_candles"
+        )
     with col2:
-        date_end = st.date_input("Date fin motif", value=datetime(2024, 1, 12).date())
-        time_end = st.time_input("Heure fin motif", value=datetime.strptime("14:30", "%H:%M").time())
+        pattern_start_time = st.time_input(
+            " Heure de début",
+            value=datetime.strptime("14:20", "%H:%M").time(),
+            key="pattern_start_time"
+        )
+        method = st.radio(
+            "️ Méthode de comparaison :",
+            ["Forme (z-score + corrélation)", "Valeurs réelles (écart absolu)"],
+            key="comparison_method"
+        )
 
-    start_ts = datetime.combine(date_start, time_start)
-    end_ts = datetime.combine(date_end, time_end)
+    # Contrôle du nombre de résultats à afficher
+    top_n_results = st.number_input(
+        " Nombre de séquences similaires à afficher",
+        min_value=1, max_value=50, value=10, step=1,
+        key="top_n_results"
+    )
 
-    pattern_df = df[(df['Time'] >= start_ts) & (df['Time'] <= end_ts)].copy()
+    pattern_start_ts = datetime.combine(pattern_start_date, pattern_start_time)
+    pattern_df = df[df['Time'] >= pattern_start_ts].head(n_candles).copy()
 
-    if len(pattern_df) < 2:
-        st.error("Séquence trop courte ou inexistante.")
+    if len(pattern_df) < n_candles:
+        st.error(" Pas assez de données pour former le motif.")
         st.stop()
 
-    st.markdown(f"**⏱ Durée du motif :** {len(pattern_df)} points")
+    # Affichage du motif sélectionné en chandeliers
+    st.markdown("###  Motif sélectionné")
+    fig_pattern = go.Figure(data=[go.Candlestick(
+        x=pattern_df['Time'],
+        open=pattern_df['Open'],
+        high=pattern_df['High'],
+        low=pattern_df['Low'],
+        close=pattern_df['Close'],
+        increasing_line_color='green',
+        decreasing_line_color='red'
+    )])
+    fig_pattern.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), xaxis_rangeslider_visible=False)
+    st.plotly_chart(fig_pattern, use_container_width=True)
 
-    similarity_threshold = st.slider("Seuil de similarité (%)", 0, 100, 60)
+    # Fonction de normalisation z-score
+    def zscore(x):
+        return (x - np.mean(x)) / np.std(x) if np.std(x) != 0 else x
 
-    pattern_close = pattern_df['Close'].values
-    sequence_length = len(pattern_close)
+    pattern_raw = pattern_df['Close'].values
+    pattern_norm = zscore(pattern_raw)
 
-    st.markdown("---")
-    st.markdown("### 🔎 Séquences similaires trouvées")
+    # Seuil de similarité selon la méthode choisie
+    if "Forme" in method:
+        similarity_threshold = st.slider(
+            " Seuil de corrélation (%)", 0, 100, 60, key="corr_threshold"
+        )
+    else:
+        similarity_threshold = st.slider(
+            " Écart moyen maximum (valeur réelle)", 0.0, 50.0, 5.0, key="abs_threshold"
+        )
 
+    # Recherche de séquences similaires
     results = []
-    i = 0
-    while i + sequence_length <= len(df):
-        window = df.iloc[i:i+sequence_length]
-        if window['Time'].iloc[0] == start_ts:
-            i += 1
+    for i in range(len(df) - n_candles):
+        window = df.iloc[i:i + n_candles]
+        if window['Time'].iloc[0] == pattern_start_ts:
             continue
 
-        compare_close = window['Close'].values
-        # Calcul de la corrélation entre pattern et la fenêtre
-        corr = np.corrcoef(pattern_close, compare_close)[0, 1]
+        candidate_close = window['Close'].values
 
-        if corr >= similarity_threshold / 100:  # seuil entre 0 et 1
-            results.append({
-                "start": window['Time'].iloc[0],
-                "end": window['Time'].iloc[-1],
-                "similarity": round(corr * 100, 2)
-            })
-        i += 1
+        if "Forme" in method:
+            candidate_norm = zscore(candidate_close)
+            corr = np.corrcoef(pattern_norm, candidate_norm)[0, 1]
+            if corr >= similarity_threshold / 100:
+                results.append({
+                    "start": window['Time'].iloc[0],
+                    "end": window['Time'].iloc[-1],
+                    "score": round(corr * 100, 2)
+                })
+        else:
+            mae = np.mean(np.abs(pattern_raw - candidate_close))
+            if mae <= similarity_threshold:
+                results.append({
+                    "start": window['Time'].iloc[0],
+                    "end": window['Time'].iloc[-1],
+                    "score": round(mae, 2)
+                })
 
+    # Tri des résultats
+    results = sorted(results, key=lambda x: -x['score'] if "Forme" in method else x['score'])
+
+    # Affichage des résultats
     if results:
-        res_df = pd.DataFrame(results)
-        st.dataframe(res_df, use_container_width=True)
+        st.markdown(f"###  Top {min(top_n_results, len(results))} séquences similaires")
+        for i, res in enumerate(results[:top_n_results]):
+            score_text = f"Similarité : {res['score']}%" if "Forme" in method else f"Écart moyen : {res['score']}"
+            with st.expander(f"{i+1}.  {res['start']} → {res['end']} | {score_text}", expanded=False):
+                sub_df = df[(df['Time'] >= res['start']) & (df['Time'] <= res['end'])].copy()
+                fig = go.Figure(data=[go.Candlestick(
+                    x=sub_df['Time'],
+                    open=sub_df['Open'],
+                    high=sub_df['High'],
+                    low=sub_df['Low'],
+                    close=sub_df['Close'],
+                    increasing_line_color='green',
+                    decreasing_line_color='red'
+                )])
+                fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("Aucune séquence similaire trouvée pour ce seuil.")
+        st.warning(" Aucune séquence similaire trouvée.")
