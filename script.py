@@ -349,7 +349,7 @@ with tab4:
                 # Réassigner les timestamps futurs en pas réguliers selon l'intervalle
                 future_df['Time'] = [start_time + i * interval for i in range(len(future_df))]
 
-                st.markdown(f"**Prédiction projetée des {future_candles_to_show} bougies suivantes après {ref_datetime.strftime('%d-%m-%Y %H:%M')}**")
+                st.markdown(f"**Prédiction projetée des {future_candles_to_show} bougies suivantes après. {ref_datetime.strftime('%d-%m-%Y %H:%M')}**")
                 fig_future = go.Figure(data=[go.Candlestick(
                     x=future_df['Time'],
                     open=future_df['Open'],
