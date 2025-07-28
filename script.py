@@ -1016,6 +1016,14 @@ with tab4:
             )
             st.plotly_chart(fig_pred, use_container_width=True)
             
+            # Store prediction data in session state for accuracy testing
+            st.session_state.prediction_data = {
+                'avg_future_change': avg_future_change,
+                'window_len': window_len,
+                'future_candles_to_show': future_candles_to_show,
+                'top_matches': top_matches
+            }
+            
             # Show detailed pattern matches
             st.markdown(f"### 📊 Top {len(top_matches)} Historical Pattern Matches")
             
@@ -1074,46 +1082,96 @@ with tab4:
                         showlegend=True
                     )
                     st.plotly_chart(fig_match, use_container_width=True)
-            
-            # Prediction accuracy assessment
-            if st.button("🧪 Test Prediction Accuracy", key="test_accuracy"):
-                with st.spinner("Testing prediction accuracy on historical data..."):
+    
+    # Prediction accuracy assessment - moved outside but check if prediction data exists
+    if 'prediction_data' in st.session_state:
+        st.markdown("### 🧪 Test Prediction Model")
+        st.info("💡 This will test how well the current prediction model performs on historical data.")
+        
+        if st.button("🧪 Test Prediction Accuracy", key="test_accuracy"):
+            with st.spinner("Testing prediction accuracy on historical data..."):
+                try:
+                    # Get prediction data from session state
+                    pred_data = st.session_state.prediction_data
+                    avg_future_change = pred_data['avg_future_change']
+                    window_len = pred_data['window_len']
+                    future_candles_to_show = pred_data['future_candles_to_show']
+                    
                     # Quick accuracy test on recent data
-                    test_results = []
-                    test_sample_size = 20
+                    test_sample_size = 10  # Reduced for faster testing
                     
-                    recent_dates = df['Time'].tail(test_sample_size * (window_len + future_candles_to_show))
-                    test_points = recent_dates[::window_len + future_candles_to_show][:test_sample_size]
+                    # Get test data points - ensure we have enough data
+                    total_data_points = len(df)
+                    min_required = test_sample_size * (window_len + future_candles_to_show + 10)
                     
-                    correct_predictions = 0
-                    total_predictions = 0
-                    
-                    for test_point in test_points:
-                        test_pattern = df[df['Time'] <= test_point].tail(window_len)
-                        actual_future = df[(df['Time'] > test_point) & 
-                                         (df['Time'] <= test_point + timedelta(minutes=5*future_candles_to_show))]
-                        
-                        if len(test_pattern) == window_len and len(actual_future) >= future_candles_to_show:
-                            # Simple prediction: use average of top matches
-                            predicted_direction = 1 if avg_future_change > 0 else -1
-                            actual_change = ((actual_future['Close'].iloc[future_candles_to_show-1] - test_pattern['Close'].iloc[-1]) / 
-                                           test_pattern['Close'].iloc[-1]) * 100
-                            actual_direction = 1 if actual_change > 0 else -1
-                            
-                            if predicted_direction == actual_direction:
-                                correct_predictions += 1
-                            total_predictions += 1
-                    
-                    if total_predictions > 0:
-                        accuracy = (correct_predictions / total_predictions) * 100
-                        st.success(f"📊 **Historical Accuracy Test**: {accuracy:.1f}% ({correct_predictions}/{total_predictions} predictions correct)")
-                        
-                        if accuracy >= 70:
-                            st.success("🎯 High confidence in prediction model!")
-                        elif accuracy >= 55:
-                            st.warning("⚠️ Moderate confidence - use with caution")
-                        else:
-                            st.error("🚨 Low confidence - consider different parameters")
+                    if total_data_points < min_required:
+                        st.warning(f"⚠️ Not enough data for accuracy testing. Need at least {min_required} data points, have {total_data_points}.")
                     else:
-                        st.warning("Insufficient data for accuracy testing")
+                        # Create test points with proper spacing
+                        start_idx = window_len
+                        end_idx = total_data_points - future_candles_to_show - 1
+                        step_size = max(1, (end_idx - start_idx) // test_sample_size)
+                        
+                        test_indices = list(range(start_idx, end_idx, step_size))[:test_sample_size]
+                        
+                        correct_predictions = 0
+                        total_predictions = 0
+                        
+                        # Progress tracking
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        for i, test_idx in enumerate(test_indices):
+                            progress_bar.progress((i + 1) / len(test_indices))
+                            status_text.text(f"Testing point {i+1}/{len(test_indices)}...")
+                            
+                            # Get test pattern and actual future
+                            test_pattern = df.iloc[test_idx-window_len:test_idx]
+                            actual_future = df.iloc[test_idx:test_idx+future_candles_to_show]
+                            
+                            if len(test_pattern) == window_len and len(actual_future) == future_candles_to_show:
+                                # Use the current prediction model's average direction
+                                predicted_direction = 1 if avg_future_change > 0 else -1
+                                
+                                # Calculate actual change
+                                actual_change = ((actual_future['Close'].iloc[-1] - test_pattern['Close'].iloc[-1]) / 
+                                               test_pattern['Close'].iloc[-1]) * 100
+                                actual_direction = 1 if actual_change > 0 else -1
+                                
+                                if predicted_direction == actual_direction:
+                                    correct_predictions += 1
+                                total_predictions += 1
+                        
+                        # Clean up progress indicators
+                        progress_bar.empty()
+                        status_text.empty()
+                        
+                        if total_predictions > 0:
+                            accuracy = (correct_predictions / total_predictions) * 100
+                            st.success(f"📊 **Historical Accuracy Test**: {accuracy:.1f}% ({correct_predictions}/{total_predictions} predictions correct)")
+                            
+                            # Show detailed results
+                            col_acc1, col_acc2, col_acc3 = st.columns(3)
+                            with col_acc1:
+                                st.metric("Accuracy", f"{accuracy:.1f}%")
+                            with col_acc2:
+                                st.metric("Correct", f"{correct_predictions}/{total_predictions}")
+                            with col_acc3:
+                                confidence = "High" if accuracy >= 70 else "Medium" if accuracy >= 55 else "Low"
+                                st.metric("Confidence", confidence)
+                            
+                            if accuracy >= 70:
+                                st.success("🎯 High confidence in prediction model!")
+                            elif accuracy >= 55:
+                                st.warning("⚠️ Moderate confidence - use with caution")
+                            else:
+                                st.error("🚨 Low confidence - consider different parameters")
+                        else:
+                            st.warning("❌ No valid test predictions could be made")
+                            
+                except Exception as e:
+                    st.error(f"❌ Error during accuracy testing: {str(e)}")
+                    st.info("💡 Try adjusting the pattern length or prediction horizon settings.")
+    else:
+        st.info("ℹ️ Generate AI predictions first to test accuracy.")
 
