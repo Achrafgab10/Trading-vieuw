@@ -120,7 +120,7 @@ if 'df_data' not in st.session_state:
 df = st.session_state.df_data
 
 
-tab1, tab2, tab3 , tab4 = st.tabs(["Trading View", "Compare Sequences", "Pattern Finder","Auto Prediction"])
+tab1, tab2, tab3, tab4 = st.tabs(["Trading View", "Compare Sequences", "Pattern Finder", "AI Prediction"])
 
 
 with tab1:
@@ -755,299 +755,802 @@ with tab3:
 
 
 with tab4:
-    st.subheader("🔮 AI Price Prediction — Pattern-Based Forecasting")
+    st.subheader("AI Price Prediction - Advanced Pattern-Based Forecasting")
     
-    # Check if data is available
-    if df.empty:
-        st.error("❌ No data available for predictions. Please check your data file.")
-        st.stop()
-    
-    # Enhanced UI layout
-    st.markdown("### 📊 Prediction Configuration")
+    # Configuration section
+    st.markdown("### Prediction Configuration")
     
     col1, col2, col3 = st.columns([2, 2, 1])
     
     with col1:
-        st.markdown("**📅 Reference Point**")
-        # Default to a realistic date from the data
-        default_date = df['Time'].max().date() - timedelta(days=1)
-        date_ref = st.date_input("Reference Date", value=default_date)
-        time_ref = st.time_input("Reference Time", value=datetime.strptime("14:00", "%H:%M").time())
-        
-    with col2:
-        st.markdown("**⚙️ Prediction Settings**")
-        window_len = st.slider("Historical Pattern Length", 10, 50, 20, help="Number of candles to analyze for pattern matching")
-        future_candles_to_show = st.slider("Prediction Horizon", 5, 30, 15, help="Number of future candles to predict")
-        
-    with col3:
-        st.markdown("**🎯 Quality Control**")
-        min_correlation = st.slider("Min Pattern Similarity", 30, 90, 60, help="Minimum correlation % to consider a pattern match")
-        max_predictions = st.number_input("Max Predictions", 3, 10, 5)
-    
-    # Combine date and time
-    ref_datetime = datetime.combine(date_ref, time_ref)
-    
-    # Generate prediction button
-    if st.button("🚀 Generate AI Predictions", type="primary", use_container_width=True):
-        
-        # Validation
-        pattern_df = df[df['Time'] <= ref_datetime].tail(window_len).copy()
-        if len(pattern_df) < window_len:
-            st.error(f"❌ Insufficient data. Found {len(pattern_df)} candles, need {window_len}. Try selecting an earlier reference date.")
+        st.markdown("**Select Prediction Date**")
+        # Check if we have data
+        if len(df) == 0:
+            st.error("No data available. Please check the data file.")
             st.stop()
         
-        # Show reference pattern
-        st.markdown("### 📈 Reference Pattern Analysis")
+        # Calculate a good default date (70% through the dataset)
+        data_start = df['Time'].min().date()
+        data_end = df['Time'].max().date()
+        total_days = (data_end - data_start).days
+        default_offset = int(total_days * 0.7)  # 70% through the data
+        default_date = data_start + timedelta(days=default_offset)
         
-        # Calculate pattern metrics
-        price_change = ((pattern_df['Close'].iloc[-1] - pattern_df['Close'].iloc[0]) / pattern_df['Close'].iloc[0]) * 100
-        volatility = (pattern_df['High'].max() - pattern_df['Low'].min()) / pattern_df['Close'].mean() * 100
-        avg_volume = (pattern_df['High'] - pattern_df['Low']).mean()
+        prediction_date = st.date_input(
+            "Reference Date", 
+            value=default_date, 
+            min_value=data_start + timedelta(days=1),
+            max_value=data_end - timedelta(days=1),
+            help="The system will analyze 20 candles before this date"
+        )
+        prediction_time = st.time_input(
+            "Reference Time", 
+            value=datetime.strptime("10:00", "%H:%M").time(),
+            help="Exact time for the prediction reference point"
+        )
         
-        col_metrics1, col_metrics2, col_metrics3, col_metrics4 = st.columns(4)
+    with col2:
+        st.markdown("**Analysis Parameters**")
+        similarity_method = st.selectbox(
+            "Similarity Algorithm",
+            [
+                "Multi-Feature Ensemble (Best)",
+                "Shape Correlation (Normalized)", 
+                "Price Correlation (Raw)",
+                "Advanced DTW (Dynamic Time Warping)"
+            ],
+            help="Algorithm used to find similar patterns"
+        )
+        min_similarity_threshold = st.slider(
+            "Minimum Similarity %", 
+            40, 95, 65,
+            help="Minimum similarity required for pattern matching"
+        )
+        
+    with col3:
+        st.markdown("**Results**")
+        num_patterns = st.number_input(
+            "Number of Patterns", 
+            min_value=3, max_value=15, value=5,
+            help="How many similar patterns to use for prediction"
+        )
+        show_confidence = st.checkbox("Show Confidence Metrics", True)
+        show_individual_predictions = st.checkbox("Show Individual Matches", True)
+        show_backtesting = st.checkbox("Show Backtesting Results", True, help="Test the algorithm on historical data to measure real accuracy")
+    
+    # Prediction button
+    prediction_datetime = datetime.combine(prediction_date, prediction_time)
+    
+    # Add validation before the button
+    reference_data_preview = df[df['Time'] < prediction_datetime].tail(20).copy()
+    available_data_count = len(reference_data_preview)
+    
+    if available_data_count < 20:
+        st.error(f"Insufficient historical data. Found only {available_data_count} candles, need 20. Please select a later date.")
+        st.info(f"**Suggestion**: Try selecting a date after {df['Time'].iloc[19].strftime('%Y-%m-%d')} to ensure enough historical data.")
+    else:
+        st.success(f"Ready: {available_data_count} historical candles available for analysis.")
+    
+    if st.button("Generate AI Prediction", type="primary", use_container_width=True, disabled=(available_data_count < 20)):
+        
+        # Get the 20 candles before prediction date
+        reference_data = df[df['Time'] < prediction_datetime].tail(20).copy()
+        
+        if len(reference_data) < 20:
+            st.error(f"Insufficient historical data. Found {len(reference_data)} candles, need 20. Please select a later date.")
+            st.stop()
+        
+        # Get actual future data (next 20 candles after prediction date) for validation if available
+        future_data = df[(df['Time'] >= prediction_datetime)].head(20).copy()
+        
+        # Display reference pattern
+        st.markdown("### Reference Pattern (Last 20 Candles)")
+        
+        # Calculate reference pattern metrics
+        ref_price_change = ((reference_data['Close'].iloc[-1] - reference_data['Close'].iloc[0]) / reference_data['Close'].iloc[0]) * 100
+        ref_volatility = np.std(reference_data['Close'].values) / np.mean(reference_data['Close'].values) * 100
+        ref_avg_range = (reference_data['High'] - reference_data['Low']).mean()
+        
+        col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
         with col_metrics1:
-            st.metric("Pattern Length", f"{window_len} candles")
+            st.metric("Price Change", f"{ref_price_change:+.2f}%")
         with col_metrics2:
-            st.metric("Price Change", f"{price_change:+.2f}%")
+            st.metric("Volatility", f"{ref_volatility:.2f}%")
         with col_metrics3:
-            st.metric("Volatility", f"{volatility:.1f}%")
-        with col_metrics4:
-            st.metric("Avg Range", f"{avg_volume:.0f}")
+            st.metric("Avg Range", f"{ref_avg_range:.2f}")
         
         # Display reference pattern chart
         fig_ref = go.Figure()
         fig_ref.add_trace(go.Candlestick(
-            x=pattern_df['Time'],
-            open=pattern_df['Open'],
-            high=pattern_df['High'],
-            low=pattern_df['Low'],
-            close=pattern_df['Close'],
-            increasing_line_color='green',
-            decreasing_line_color='red',
+            x=reference_data['Time'],
+            open=reference_data['Open'],
+            high=reference_data['High'],
+            low=reference_data['Low'],
+            close=reference_data['Close'],
+            increasing=dict(
+                line=dict(color='#00AA00', width=3),
+                fillcolor='rgba(0, 170, 0, 0.7)'
+            ),
+            decreasing=dict(
+                line=dict(color='#FF0000', width=3),
+                fillcolor='rgba(255, 0, 0, 0.7)'
+            ),
             name="Reference Pattern"
         ))
         fig_ref.update_layout(
             height=400,
-            title=f"Reference Pattern: {pattern_df['Time'].iloc[0].strftime('%Y-%m-%d %H:%M')} to {pattern_df['Time'].iloc[-1].strftime('%Y-%m-%d %H:%M')}",
+            title=f"Reference Pattern: {reference_data['Time'].iloc[0].strftime('%Y-%m-%d %H:%M')} to {reference_data['Time'].iloc[-1].strftime('%Y-%m-%d %H:%M')}",
             xaxis_rangeslider_visible=False,
-            margin=dict(l=10, r=10, t=50, b=10)
+            margin=dict(l=20, r=20, t=50, b=20),
+            xaxis=dict(
+                type='date',
+                tickmode='auto',
+                showgrid=True,
+                gridcolor='rgba(128, 128, 128, 0.2)'
+            ),
+            yaxis=dict(
+                autorange=True,
+                showgrid=True,
+                gridcolor='rgba(128, 128, 128, 0.2)'
+            )
         )
         st.plotly_chart(fig_ref, use_container_width=True)
         
-        # Advanced pattern matching with caching
-        @st.cache_data(ttl=120)
-        def find_similar_patterns_for_prediction(ref_pattern_hash, window_length, future_length, min_corr_threshold):
-            """Find historical patterns similar to reference pattern"""
-            ref_data = st.session_state.df_data[st.session_state.df_data['Time'] <= ref_datetime].tail(window_length)
-            
-            # Normalize reference pattern
-            ref_close = zscore(ref_data['Close'].values.astype(np.float32))
-            ref_high = zscore(ref_data['High'].values.astype(np.float32))
-            ref_low = zscore(ref_data['Low'].values.astype(np.float32))
+        # Advanced pattern matching and prediction
+        @st.cache_data(ttl=300)
+        def find_similar_patterns_and_predict(ref_data, similarity_method, min_similarity, num_patterns):
+            """Find top N similar patterns and generate predictions"""
             
             matches = []
-            total_windows = len(df) - window_length - future_length
-            step_size = max(3, total_windows // 500)  # Limit to 500 comparisons for speed
+            total_windows = len(df) - 40  # Need 20 for pattern + 20 for future
+            step_size = max(1, total_windows // 3000)  # Optimize search
+            
+            # Prepare reference features based on method
+            ref_close = ref_data['Close'].values.astype(np.float64)
+            ref_high = ref_data['High'].values.astype(np.float64)
+            ref_low = ref_data['Low'].values.astype(np.float64)
+            ref_open = ref_data['Open'].values.astype(np.float64)
+            
+            def calculate_similarity(ref_data, candidate_data, method):
+                """Calculate similarity using specified method"""
+                cand_close = candidate_data['Close'].values.astype(np.float64)
+                cand_high = candidate_data['High'].values.astype(np.float64)
+                cand_low = candidate_data['Low'].values.astype(np.float64)
+                cand_open = candidate_data['Open'].values.astype(np.float64)
+                
+                try:
+                    if method == "Shape Correlation (Normalized)":
+                        ref_norm = zscore(ref_close)
+                        cand_norm = zscore(cand_close)
+                        return np.corrcoef(ref_norm, cand_norm)[0, 1] * 100
+                    
+                    elif method == "Price Correlation (Raw)":
+                        return np.corrcoef(ref_close, cand_close)[0, 1] * 100
+                    
+                    elif method == "Advanced DTW (Dynamic Time Warping)":
+                        # Simplified DTW implementation
+                        ref_norm = zscore(ref_close)
+                        cand_norm = zscore(cand_close)
+                        n, m = len(ref_norm), len(cand_norm)
+                        
+                        # Create DTW matrix
+                        dtw_matrix = np.full((n + 1, m + 1), np.inf)
+                        dtw_matrix[0, 0] = 0
+                        
+                        for i in range(1, n + 1):
+                            for j in range(1, m + 1):
+                                cost = abs(ref_norm[i-1] - cand_norm[j-1]) ** 2
+                                dtw_matrix[i, j] = cost + min(
+                                    dtw_matrix[i-1, j],
+                                    dtw_matrix[i, j-1],
+                                    dtw_matrix[i-1, j-1]
+                                )
+                        
+                        distance = dtw_matrix[n, m]
+                        max_distance = np.var(ref_norm) + np.var(cand_norm) + 1e-8
+                        similarity = max(0, 100 - (distance / (max_distance * max(n, m)) * 20))
+                        return similarity
+                    
+                    else:  # Multi-Feature Ensemble (Best)
+                        # Multiple correlation features
+                        correlations = []
+                        
+                        # 1. Normalized price correlation
+                        ref_norm = zscore(ref_close)
+                        cand_norm = zscore(cand_close)
+                        correlations.append(abs(np.corrcoef(ref_norm, cand_norm)[0, 1]))
+                        
+                        # 2. High/Low correlation
+                        correlations.append(abs(np.corrcoef(zscore(ref_high), zscore(cand_high))[0, 1]))
+                        correlations.append(abs(np.corrcoef(zscore(ref_low), zscore(cand_low))[0, 1]))
+                        
+                        # 3. Range correlation (volatility pattern)
+                        ref_range = ref_high - ref_low
+                        cand_range = cand_high - cand_low
+                        correlations.append(abs(np.corrcoef(zscore(ref_range), zscore(cand_range))[0, 1]))
+                        
+                        # 4. Returns correlation
+                        ref_returns = np.diff(ref_close) / ref_close[:-1]
+                        cand_returns = np.diff(cand_close) / cand_close[:-1]
+                        correlations.append(abs(np.corrcoef(ref_returns, cand_returns)[0, 1]))
+                        
+                        # 5. Directional consistency
+                        ref_direction = np.sign(np.diff(ref_close))
+                        cand_direction = np.sign(np.diff(cand_close))
+                        direction_match = (ref_direction == cand_direction).mean()
+                        correlations.append(direction_match)
+                        
+                        # 6. Volatility pattern similarity (NEW)
+                        ref_volatility = np.std(ref_close)
+                        cand_volatility = np.std(cand_close)
+                        vol_similarity = 1 - abs(ref_volatility - cand_volatility) / (ref_volatility + cand_volatility + 1e-8)
+                        correlations.append(vol_similarity)
+                        
+                        # Filter out NaN values
+                        valid_correlations = [c for c in correlations if not np.isnan(c)]
+                        
+                        if len(valid_correlations) == 0:
+                            return 0
+                        
+                        # Enhanced weighted ensemble score with more features
+                        base_weights = [0.25, 0.12, 0.12, 0.18, 0.13, 0.05, 0.15]
+                        weights = np.array(base_weights[:len(valid_correlations)])
+                        weights = weights / np.sum(weights)  # Normalize
+                        
+                        ensemble_score = np.average(valid_correlations, weights=weights) * 100
+                        return ensemble_score
+                        
+                except:
+                    return 0
             
             # Progress tracking
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            for i in range(0, total_windows, step_size):
-                if i % 50 == 0:
-                    progress_bar.progress(min(i / total_windows, 1.0))
-                    status_text.text(f"Scanning historical patterns... {i}/{total_windows}")
+            processed = 0
+            for i in range(20, total_windows, step_size):
+                if processed % 200 == 0:
+                    progress = min(processed / (total_windows // step_size), 1.0)
+                    progress_bar.progress(progress)
+                    status_text.text(f"Analyzing patterns... {processed}/{total_windows // step_size}")
                 
-                candidate_df = df.iloc[i:i + window_length]
-                future_df = df.iloc[i + window_length:i + window_length + future_length]
+                # Get candidate pattern (20 candles)
+                candidate_pattern = df.iloc[i:i + 20]
+                # Get future data after pattern (20 candles)
+                candidate_future = df.iloc[i + 20:i + 40]
                 
-                # Skip if overlaps with reference or insufficient future data
-                if (len(candidate_df) < window_length or len(future_df) < future_length or
-                    candidate_df['Time'].iloc[-1] >= ref_datetime):
+                if len(candidate_pattern) < 20 or len(candidate_future) < 20:
+                    processed += 1
                     continue
                 
-                try:
-                    # Calculate multi-feature similarity
-                    cand_close = zscore(candidate_df['Close'].values.astype(np.float32))
-                    cand_high = zscore(candidate_df['High'].values.astype(np.float32))
-                    cand_low = zscore(candidate_df['Low'].values.astype(np.float32))
-                    
-                    # Weighted correlation (Close price has more weight)
-                    corr_close = np.corrcoef(ref_close, cand_close)[0, 1]
-                    corr_high = np.corrcoef(ref_high, cand_high)[0, 1]
-                    corr_low = np.corrcoef(ref_low, cand_low)[0, 1]
-                    
-                    if np.isnan(corr_close) or np.isnan(corr_high) or np.isnan(corr_low):
-                        continue
-                    
-                    # Combined similarity score
-                    similarity = (0.6 * corr_close + 0.2 * corr_high + 0.2 * corr_low) * 100
-                    
-                    if similarity >= min_corr_threshold:
-                        # Calculate pattern metrics
-                        pattern_change = ((candidate_df['Close'].iloc[-1] - candidate_df['Close'].iloc[0]) / 
-                                        candidate_df['Close'].iloc[0]) * 100
-                        future_change = ((future_df['Close'].iloc[-1] - candidate_df['Close'].iloc[-1]) / 
-                                       candidate_df['Close'].iloc[-1]) * 100
-                        
-                        matches.append({
-                            "start": candidate_df['Time'].iloc[0],
-                            "end": candidate_df['Time'].iloc[-1],
-                            "similarity": round(similarity, 2),
-                            "pattern_change": round(pattern_change, 2),
-                            "future_change": round(future_change, 2),
-                            "pattern_data": candidate_df.copy(),
-                            "future_data": future_df.copy()
-                        })
-                        
-                except (ValueError, IndexError, ZeroDivisionError):
+                # Skip if overlapping with our reference period
+                if (candidate_pattern['Time'].iloc[-1] >= ref_data['Time'].iloc[0] and 
+                    candidate_pattern['Time'].iloc[0] <= ref_data['Time'].iloc[-1]):
+                    processed += 1
                     continue
+                
+                # Calculate similarity
+                similarity_score = calculate_similarity(ref_data, candidate_pattern, similarity_method)
+                
+                # Additional quality filter: check if patterns have reasonable data
+                pattern_quality = True
+                if (candidate_pattern['Close'].std() == 0 or 
+                    candidate_future['Close'].std() == 0 or
+                    candidate_pattern['Close'].isnull().any() or
+                    candidate_future['Close'].isnull().any()):
+                    pattern_quality = False
+                
+                if similarity_score >= min_similarity and pattern_quality:
+                    # Calculate pattern metrics
+                    pattern_change = ((candidate_pattern['Close'].iloc[-1] - candidate_pattern['Close'].iloc[0]) / candidate_pattern['Close'].iloc[0]) * 100
+                    future_change = ((candidate_future['Close'].iloc[-1] - candidate_pattern['Close'].iloc[-1]) / candidate_pattern['Close'].iloc[-1]) * 100
+                    
+                    pattern_volatility = np.std(candidate_pattern['Close'].values) / np.mean(candidate_pattern['Close'].values) * 100
+                    
+                    matches.append({
+                        'start_time': candidate_pattern['Time'].iloc[0],
+                        'end_time': candidate_pattern['Time'].iloc[-1],
+                        'similarity': round(similarity_score, 2),
+                        'pattern_change': round(pattern_change, 2),
+                        'future_change': round(future_change, 2),
+                        'volatility': round(pattern_volatility, 2),
+                        'pattern_data': candidate_pattern.copy(),
+                        'future_data': candidate_future.copy()
+                    })
+                
+                processed += 1
             
-            # Clean up progress indicators
             progress_bar.empty()
             status_text.empty()
             
-            return sorted(matches, key=lambda x: x['similarity'], reverse=True)
+            # Return top N matches sorted by similarity
+            return sorted(matches, key=lambda x: x['similarity'], reverse=True)[:num_patterns]
         
-        # Execute pattern search
-        with st.spinner(f"🔍 Searching for similar patterns... This may take a moment..."):
-            similar_matches = find_similar_patterns_for_prediction(
-                hash(pattern_df.values.tobytes()), window_len, future_candles_to_show, min_correlation
+        # Execute the search
+        with st.spinner(f"🔍 Searching for similar patterns using {similarity_method}..."):
+            top_matches = find_similar_patterns_and_predict(
+                reference_data, 
+                similarity_method, 
+                min_similarity_threshold,
+                num_patterns
             )
+        
+        if not top_matches:
+            st.warning(f"❌ No similar patterns found with similarity >= {min_similarity_threshold}%. Try lowering the similarity threshold.")
+            st.info("💡 **Tip**: Lower the minimum similarity or try a different algorithm.")
+            st.stop()
         
         # Display results
-        if not similar_matches:
-            st.warning(f"❌ No similar patterns found with similarity >= {min_correlation}%. Try lowering the minimum similarity threshold.")
-            st.info("💡 **Suggestions**: Lower the minimum similarity, increase pattern length, or try a different reference point.")
+        st.success(f"✅ Found {len(top_matches)} high-quality pattern matches!")
+        
+        # Generate ensemble prediction
+        st.markdown("### AI Ensemble Prediction")
+        
+        # Calculate weighted average prediction (IMPROVED METHOD)
+        total_weight = 0
+        weighted_future_changes = []
+        weighted_returns = []  # Store relative returns instead of absolute prices
+        
+        # Get the last known price as our starting point
+        last_known_price = reference_data['Close'].iloc[-1]
+        
+        for match in top_matches:
+            weight = match['similarity'] / 100.0  # Convert percentage to weight
+            total_weight += weight
+            weighted_future_changes.append(match['future_change'] * weight)
+            
+            # Calculate relative returns from the pattern's future data
+            pattern_last_price = match['pattern_data']['Close'].iloc[-1]
+            future_data_match = match['future_data']
+            
+            # Calculate returns for each candle relative to the pattern's end
+            returns_sequence = []
+            prev_price = pattern_last_price
+            
+            for _, row in future_data_match.iterrows():
+                # Calculate OHLC as percentage changes from previous close
+                open_return = (row['Open'] - prev_price) / prev_price
+                high_return = (row['High'] - prev_price) / prev_price  
+                low_return = (row['Low'] - prev_price) / prev_price
+                close_return = (row['Close'] - prev_price) / prev_price
+                
+                returns_sequence.append({
+                    'open_return': open_return,
+                    'high_return': high_return, 
+                    'low_return': low_return,
+                    'close_return': close_return,
+                    'weight': weight
+                })
+                prev_price = row['Close']  # Update for next iteration
+            
+            weighted_returns.append(returns_sequence)
+        
+        # Generate prediction by applying weighted average returns to last known price
+        prediction_candles = []
+        current_price = last_known_price
+        
+        for candle_idx in range(20):
+            # Aggregate weighted returns for this candle position
+            total_open_return = 0
+            total_high_return = 0 
+            total_low_return = 0
+            total_close_return = 0
+            total_candle_weight = 0
+            
+            for pattern_returns in weighted_returns:
+                if candle_idx < len(pattern_returns):
+                    candle_data = pattern_returns[candle_idx]
+                    weight = candle_data['weight']
+                    
+                    total_open_return += candle_data['open_return'] * weight
+                    total_high_return += candle_data['high_return'] * weight
+                    total_low_return += candle_data['low_return'] * weight 
+                    total_close_return += candle_data['close_return'] * weight
+                    total_candle_weight += weight
+            
+            if total_candle_weight > 0:
+                # Apply weighted average returns to current price
+                pred_open = current_price * (1 + total_open_return / total_candle_weight)
+                pred_high = current_price * (1 + total_high_return / total_candle_weight)
+                pred_low = current_price * (1 + total_low_return / total_candle_weight)
+                pred_close = current_price * (1 + total_close_return / total_candle_weight)
+                
+                # Ensure OHLC logic (High >= max(O,C), Low <= min(O,C))
+                pred_high = max(pred_high, pred_open, pred_close)
+                pred_low = min(pred_low, pred_open, pred_close)
+                
+                prediction_candles.append([pred_open, pred_high, pred_low, pred_close])
+                current_price = pred_close  # Update for next candle
+            else:
+                # Fallback: use last known values
+                prediction_candles.append([current_price, current_price, current_price, current_price])
+        
+        # Calculate ensemble prediction change
+        if total_weight > 0:
+            ensemble_future_change = sum(weighted_future_changes) / total_weight
         else:
-            st.success(f"✅ Found {len(similar_matches)} similar historical patterns!")
+            ensemble_future_change = 0
+        
+        # Display prediction summary with enhanced metrics
+        avg_similarity = np.mean([m['similarity'] for m in top_matches])
+        min_similarity = min([m['similarity'] for m in top_matches])
+        bullish_count = sum(1 for m in top_matches if m['future_change'] > 0)
+        bearish_count = len(top_matches) - bullish_count
+        
+        # Calculate prediction consensus strength
+        future_changes = [m['future_change'] for m in top_matches]
+        prediction_std = np.std(future_changes)
+        consensus_strength = max(0, 100 - prediction_std * 2)  # Lower std = higher consensus
+        
+        # Enhanced confidence calculation
+        confidence_score = (
+            avg_similarity * 0.4 +  # Average similarity weight
+            min_similarity * 0.2 +  # Weakest link weight
+            consensus_strength * 0.3 +  # Prediction agreement weight
+            (max(bullish_count, bearish_count) / len(top_matches)) * 100 * 0.1  # Directional consensus weight
+        )
+        
+        col_pred1, col_pred2, col_pred3, col_pred4 = st.columns(4)
+        with col_pred1:
+            st.metric("Predicted Change", f"{ensemble_future_change:+.2f}%")
+        with col_pred2:
+            st.metric("Avg Similarity", f"{avg_similarity:.1f}%", f"Range: {min_similarity:.1f}%-{max([m['similarity'] for m in top_matches]):.1f}%")
+        with col_pred3:
+            st.metric("Signal Consensus", f"{bullish_count} vs {bearish_count}", f"{max(bullish_count, bearish_count)/len(top_matches)*100:.0f}% agreement")
+        with col_pred4:
+            confidence_level = "High" if confidence_score >= 75 else "Medium" if confidence_score >= 60 else "Low"
+            st.metric("Confidence", f"{confidence_score:.1f}%", confidence_level)
+        
+        
+        # Generate future timeline matching historical data spacing
+        last_time = reference_data['Time'].iloc[-1]
+        
+        # Calculate the most common time interval from reference data
+        if len(reference_data) >= 2:
+            ref_time_diffs = reference_data['Time'].diff().dropna()
+            if len(ref_time_diffs) > 0:
+                # Use the most frequent time difference
+                time_freq = ref_time_diffs.mode().iloc[0] if len(ref_time_diffs.mode()) > 0 else ref_time_diffs.median()
+            else:
+                time_freq = pd.Timedelta(hours=1)  # fallback
+        else:
+            time_freq = pd.Timedelta(hours=1)  # fallback
             
-            # Show prediction summary
-            top_matches = similar_matches[:max_predictions]
-            avg_future_change = np.mean([m['future_change'] for m in top_matches])
-            bullish_predictions = sum(1 for m in top_matches if m['future_change'] > 0)
-            bearish_predictions = len(top_matches) - bullish_predictions
+        # Show the detected frequency for debugging
+        st.info(f"Detected time interval: {time_freq} for consistent chart display")
+        
+        # Generate future timestamps matching historical spacing
+        future_times = []
+        current_time = last_time
+        for i in range(20):
+            current_time += time_freq
+            future_times.append(current_time)
+        
+        # Create prediction dataframe with proper data types
+        pred_df = pd.DataFrame(
+            prediction_candles, 
+            columns=['Open', 'High', 'Low', 'Close']
+        ).astype(np.float64)
+        pred_df['Time'] = future_times
+        
+        # Validate prediction data integrity
+        pred_df = pred_df.replace([np.inf, -np.inf], np.nan).dropna()
+        if len(pred_df) == 0:
+            st.error("Unable to generate valid predictions. Try different parameters.")
+            st.stop()
             
-            st.markdown("### 🎯 AI Prediction Summary")
-            col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
-            with col_sum1:
-                st.metric("Avg Future Change", f"{avg_future_change:+.1f}%")
-            with col_sum2:
-                st.metric("Bullish Signals", f"{bullish_predictions}/{len(top_matches)}")
-            with col_sum3:
-                st.metric("Bearish Signals", f"{bearish_predictions}/{len(top_matches)}")
-            with col_sum4:
-                confidence = "High" if len(top_matches) >= 3 and top_matches[0]['similarity'] >= 75 else "Medium" if len(top_matches) >= 2 else "Low"
-                st.metric("Confidence", confidence)
+        # Simple validation - just ensure we have data
+        if len(pred_df) < 20:
+            st.warning(f"Generated {len(pred_df)} prediction candles instead of 20. This might affect accuracy.")
             
-            # Generate future predictions
-            st.markdown("### 🔮 Price Predictions")
+        # Apply prediction smoothing to reduce noise (NEW FEATURE)
+        if len(pred_df) > 2:
+            # Apply a gentle smoothing to make predictions more realistic
+            window_size = min(3, len(pred_df))
+            for col in ['Open', 'High', 'Low', 'Close']:
+                pred_df[col] = pred_df[col].rolling(window=window_size, center=True, min_periods=1).mean()
             
-            # Calculate prediction based on historical patterns
-            last_price = pattern_df['Close'].iloc[-1]
-            last_time = pattern_df['Time'].iloc[-1]
-            time_freq = df['Time'].diff().mode()[0]
-            
-            # Create prediction timeline
-            future_times = [last_time + (i+1) * time_freq for i in range(future_candles_to_show)]
-            
-            # Aggregate predictions from top matches
-            prediction_values = np.zeros((future_candles_to_show, 4), dtype=np.float64)  # OHLC
-            
-            for match in top_matches:
-                # Weight by similarity
-                weight = float(match['similarity']) / 100.0
+            # Ensure OHLC relationships are maintained after smoothing
+            for i in range(len(pred_df)):
+                open_val = pred_df.iloc[i]['Open']
+                high_val = pred_df.iloc[i]['High'] 
+                low_val = pred_df.iloc[i]['Low']
+                close_val = pred_df.iloc[i]['Close']
                 
-                # Calculate deltas from historical pattern - ensure float64
-                base_values = match['pattern_data'].iloc[-1][['Open', 'High', 'Low', 'Close']].values.astype(np.float64)
-                future_values = match['future_data'][['Open', 'High', 'Low', 'Close']].values.astype(np.float64)
-                current_values = pattern_df.iloc[-1][['Open', 'High', 'Low', 'Close']].values.astype(np.float64)
+                # Fix any OHLC violations
+                corrected_high = max(high_val, open_val, close_val)
+                corrected_low = min(low_val, open_val, close_val)
                 
-                # Apply deltas to current price level
-                for j in range(min(len(future_values), future_candles_to_show)):
-                    # Calculate delta and apply to current values
-                    delta = future_values[j] - base_values
-                    predicted_candle = current_values + delta
-                    prediction_values[j] += predicted_candle * weight
-            
-            # Normalize by total weight
-            total_weight = sum(float(m['similarity']) / 100.0 for m in top_matches)
-            if total_weight > 0:
-                prediction_values /= total_weight
-            
-            # Create prediction dataframe
-            pred_df = pd.DataFrame(prediction_values, columns=['Open', 'High', 'Low', 'Close'])
-            pred_df['Time'] = future_times[:len(pred_df)]
-            
-            # Display prediction chart
-            fig_pred = go.Figure()
-            
-            # Add historical pattern (reference)
-            fig_pred.add_trace(go.Candlestick(
-                x=pattern_df['Time'],
-                open=pattern_df['Open'],
-                high=pattern_df['High'],
-                low=pattern_df['Low'],
-                close=pattern_df['Close'],
-                increasing_line_color='green',
-                decreasing_line_color='red',
-                name="Historical Reference",
-                opacity=0.7
+                pred_df.iloc[i, pred_df.columns.get_loc('High')] = corrected_high
+                pred_df.iloc[i, pred_df.columns.get_loc('Low')] = corrected_low
+        
+        # Display prediction chart
+        st.markdown("### Price Prediction Chart")
+        
+        fig_prediction = go.Figure()
+        
+        # Add historical reference pattern
+        fig_prediction.add_trace(go.Candlestick(
+            x=reference_data['Time'],
+            open=reference_data['Open'],
+            high=reference_data['High'],
+            low=reference_data['Low'],
+            close=reference_data['Close'],
+            increasing=dict(
+                line=dict(color='#2E8B57', width=3),
+                fillcolor='rgba(46, 139, 87, 0.7)'
+            ),
+            decreasing=dict(
+                line=dict(color='#CD5C5C', width=3),
+                fillcolor='rgba(205, 92, 92, 0.7)'
+            ),
+            name="Historical (20 candles)"
+        ))
+        
+        # Add prediction with adaptive candlestick sizing
+        fig_prediction.add_trace(go.Candlestick(
+            x=pred_df['Time'],
+            open=pred_df['Open'],
+            high=pred_df['High'],
+            low=pred_df['Low'],
+            close=pred_df['Close'],
+            increasing=dict(
+                line=dict(color='#00FF00', width=4),
+                fillcolor='rgba(0, 255, 0, 0.8)'
+            ),
+            decreasing=dict(
+                line=dict(color='#FF0000', width=4),
+                fillcolor='rgba(255, 0, 0, 0.8)'
+            ),
+            name="AI Prediction (20 candles)"
+        ))
+        
+        # Add actual future data if available (for comparison)
+        if len(future_data) == 20:
+            fig_prediction.add_trace(go.Candlestick(
+                x=future_data['Time'],
+                open=future_data['Open'],
+                high=future_data['High'],
+                low=future_data['Low'],
+                close=future_data['Close'],
+                increasing=dict(
+                    line=dict(color='#FFD700', width=3),
+                    fillcolor='rgba(255, 215, 0, 0.7)'
+                ),
+                decreasing=dict(
+                    line=dict(color='#FFA500', width=3),
+                    fillcolor='rgba(255, 165, 0, 0.7)'
+                ),
+                name="Actual Future (Validation)"
             ))
+        
+        # Add separator line (with error handling)
+        separator_time = reference_data['Time'].iloc[-1]
+        
+        # Calculate y-axis range with error handling
+        try:
+            ref_low_min = reference_data['Low'].min()
+            ref_high_max = reference_data['High'].max()
+            pred_low_min = pred_df['Low'].min() if len(pred_df) > 0 else ref_low_min
+            pred_high_max = pred_df['High'].max() if len(pred_df) > 0 else ref_high_max
             
-            # Add prediction
-            fig_pred.add_trace(go.Candlestick(
-                x=pred_df['Time'],
-                open=pred_df['Open'],
-                high=pred_df['High'],
-                low=pred_df['Low'],
-                close=pred_df['Close'],
-                increasing_line_color='green',
-                decreasing_line_color='red',
-                name="AI Prediction"
-            ))
+            y_min = min(ref_low_min, pred_low_min)
+            y_max = max(ref_high_max, pred_high_max)
             
-            fig_pred.update_layout(
-                height=500,
-                title=f"AI Price Prediction - Next {future_candles_to_show} Candles",
-                xaxis_rangeslider_visible=False,
-                margin=dict(l=10, r=10, t=50, b=10),
-                showlegend=True
+            # Add some padding
+            y_range = y_max - y_min
+            y_min -= y_range * 0.05
+            y_max += y_range * 0.05
+        except:
+            # Fallback to reference data range
+            y_min = reference_data['Low'].min()
+            y_max = reference_data['High'].max()
+        
+        fig_prediction.add_shape(
+            type="line",
+            x0=separator_time, y0=y_min,
+            x1=separator_time, y1=y_max,
+            line=dict(color="#FFD700", width=3, dash="dash")
+        )
+        
+        # Calculate proper x-axis range to avoid huge gaps
+        all_times = list(reference_data['Time']) + list(pred_df['Time'])
+        if len(future_data) == 20:
+            all_times.extend(list(future_data['Time']))
+        
+        min_time = min(all_times)
+        max_time = max(all_times)
+        
+        # Calculate appropriate tick spacing based on time range
+        time_range = max_time - min_time
+        
+        # Determine optimal number of ticks based on time range
+        if time_range <= pd.Timedelta(hours=2):
+            nticks = 10
+            tick_format = '%H:%M'
+        elif time_range <= pd.Timedelta(days=1):
+            nticks = 12
+            tick_format = '%m-%d %H:%M'
+        elif time_range <= pd.Timedelta(days=7):
+            nticks = 15
+            tick_format = '%m-%d'
+        else:
+            nticks = 20
+            tick_format = '%Y-%m-%d'
+            
+        fig_prediction.update_layout(
+            height=600,
+            title="AI Price Prediction: Historical vs Predicted vs Actual",
+            xaxis_rangeslider_visible=False,
+            showlegend=True,
+            margin=dict(l=20, r=20, t=60, b=20),
+            xaxis=dict(
+                type='date',
+                range=[min_time, max_time],
+                tickmode='auto',
+                nticks=nticks,
+                tickformat=tick_format,
+                rangeslider=dict(visible=False),
+                showgrid=True,
+                gridcolor='rgba(128, 128, 128, 0.2)',
+                tickangle=-45
+            ),
+            yaxis=dict(
+                autorange=True,
+                fixedrange=False,
+                showgrid=True,
+                gridcolor='rgba(128, 128, 128, 0.2)'
             )
-            st.plotly_chart(fig_pred, use_container_width=True)
+        )
+        
+        st.plotly_chart(fig_prediction, use_container_width=True)
+        
+        # Validate prediction accuracy button
+        st.markdown("### Prediction Validation")
+        
+        if len(future_data) == 20:
+            col_validate1, col_validate2 = st.columns([1, 3])
             
-            # Store prediction data in session state for accuracy testing
-            st.session_state.prediction_data = {
-                'avg_future_change': avg_future_change,
-                'window_len': window_len,
-                'future_candles_to_show': future_candles_to_show,
-                'top_matches': top_matches
-            }
+            with col_validate1:
+                if st.button("Validate Prediction Accuracy", type="secondary", use_container_width=True):
+                    st.session_state.show_validation = True
             
-            # Show detailed pattern matches
-            st.markdown(f"### 📊 Top {len(top_matches)} Historical Pattern Matches")
+            with col_validate2:
+                st.info("Compare AI prediction against actual market data to measure accuracy")
+            
+            # Show validation results if button was clicked
+            if st.session_state.get('show_validation', False):
+                st.markdown("#### 🎯 Prediction Accuracy Results")
+                
+                # Calculate comprehensive accuracy metrics
+                actual_change = ((future_data['Close'].iloc[-1] - future_data['Close'].iloc[0]) / future_data['Close'].iloc[0]) * 100
+                prediction_error = abs(ensemble_future_change - actual_change)
+                direction_correct = (ensemble_future_change > 0) == (actual_change > 0)
+                
+                # Price prediction accuracy (inverse of relative error)
+                relative_error = prediction_error / (abs(actual_change) + 0.01)  # Add small constant to avoid division by zero
+                price_accuracy = max(0, 100 - (relative_error * 10))  # Scale error to percentage
+                price_accuracy = min(price_accuracy, 100)  # Cap at 100%
+                
+                # Direction accuracy
+                direction_accuracy = 100 if direction_correct else 0
+                
+                # Overall accuracy (weighted average)
+                overall_accuracy = (price_accuracy * 0.7) + (direction_accuracy * 0.3)
+                
+                # Calculate candle-by-candle accuracy
+                candle_accuracies = []
+                for i in range(min(20, len(future_data), len(pred_df))):
+                    actual_close = future_data['Close'].iloc[i]
+                    predicted_close = pred_df['Close'].iloc[i]
+                    candle_error = abs(predicted_close - actual_close) / actual_close * 100
+                    candle_accuracy = max(0, 100 - candle_error)
+                    candle_accuracies.append(candle_accuracy)
+                
+                avg_candle_accuracy = np.mean(candle_accuracies) if candle_accuracies else 0
+                
+                # Display accuracy metrics with color coding
+                col_metric1, col_metric2, col_metric3, col_metric4 = st.columns(4)
+                
+                with col_metric1:
+                    st.metric(
+                        "Overall Accuracy",
+                        f"{overall_accuracy:.1f}%",
+                        delta=f"{overall_accuracy - 50:.1f}% vs baseline" if overall_accuracy > 50 else None
+                    )
+                
+                with col_metric2:
+                    st.metric(
+                        "Direction Accuracy",
+                        "100%" if direction_correct else "0%",
+                        delta="Correct" if direction_correct else "Wrong"
+                    )
+                
+                with col_metric3:
+                    st.metric(
+                        "Price Accuracy",
+                        f"{price_accuracy:.1f}%",
+                        delta=f"Error: {prediction_error:.2f}%"
+                    )
+                
+                with col_metric4:
+                    st.metric(
+                        "Avg Candle Accuracy",
+                        f"{avg_candle_accuracy:.1f}%",
+                        delta=f"{len(candle_accuracies)} candles analyzed"
+                    )
+                
+                # Detailed comparison
+                st.markdown("#### Detailed Prediction vs Actual")
+                
+                comparison_data = {
+                    "Metric": ["Predicted Change", "Actual Change", "Error", "Direction Match"],
+                    "Value": [
+                        f"{ensemble_future_change:+.2f}%",
+                        f"{actual_change:+.2f}%",
+                        f"{prediction_error:.2f}%",
+                        "Yes" if direction_correct else "No"
+                    ]
+                }
+                
+                st.table(pd.DataFrame(comparison_data))
+                
+                # Interpretation
+                st.markdown("#### Accuracy Interpretation")
+                if overall_accuracy >= 80:
+                    st.success("**Excellent Prediction**: The AI model achieved high accuracy with strong price and direction predictions.")
+                elif overall_accuracy >= 60:
+                    st.warning("**Good Prediction**: Reasonable accuracy with some deviation from actual prices.")
+                elif overall_accuracy >= 40:
+                    st.info("**Moderate Prediction**: Mixed results - some aspects predicted correctly, others less so.")
+                else:
+                    st.error("**Poor Prediction**: Low accuracy. The selected patterns may not have been truly similar.")
+                
+                # Reset validation state
+                if st.button("Clear Validation", key="clear_validation"):
+                    st.session_state.show_validation = False
+                    st.rerun()
+                    
+        else:
+            st.warning("No future data available for validation. Select an earlier prediction date to enable accuracy testing.")
+        
+        # Show confidence metrics if requested
+        if show_confidence:
+            # Additional confidence metrics
+            pattern_consistency = np.std([m['future_change'] for m in top_matches])
+            similarity_spread = max([m['similarity'] for m in top_matches]) - min([m['similarity'] for m in top_matches])
+            
+            col_conf1, col_conf2, col_conf3 = st.columns(3)
+            with col_conf1:
+                st.metric("Pattern Consistency", f"{pattern_consistency:.2f}%", help="Lower values indicate more consistent predictions")
+            with col_conf2:
+                st.metric("Similarity Spread", f"{similarity_spread:.1f}%", help="Lower spread indicates more uniform match quality")
+            with col_conf3:
+                confidence_score = max(0, 100 - pattern_consistency * 2 - similarity_spread * 0.5)
+                confidence_level = "High" if confidence_score >= 70 else "Medium" if confidence_score >= 50 else "Low"
+                st.metric("Confidence Score", f"{confidence_score:.1f}% ({confidence_level})")
+        
+        
+        # Show individual pattern matches if requested
+        if show_individual_predictions:
+            st.markdown(f"### Top {len(top_matches)} Pattern Matches")
             
             for i, match in enumerate(top_matches):
-                similarity_color = "🟢" if match['similarity'] >= 80 else "🟡" if match['similarity'] >= 70 else "🔵"
-                trend_emoji = "📈" if match['future_change'] > 0 else "📉"
-                
                 with st.expander(
-                    f"{similarity_color} {trend_emoji} Match #{i+1} — {match['start'].strftime('%Y-%m-%d %H:%M')} | "
-                    f"Similarity: {match['similarity']}% | Future: {match['future_change']:+.1f}%",
-                    expanded=i < 2  # Auto-expand top 2
+                    f"Match #{i+1} - {match['start_time'].strftime('%Y-%m-%d %H:%M')} | "
+                    f"Similarity: {match['similarity']}% | Predicted: {match['future_change']:+.1f}%",
+                    expanded=i < 2
                 ):
-                    # Pattern details
+                    # Match details
                     col_detail1, col_detail2, col_detail3 = st.columns(3)
                     with col_detail1:
                         st.metric("Pattern Similarity", f"{match['similarity']}%")
                     with col_detail2:
                         st.metric("Pattern Change", f"{match['pattern_change']:+.1f}%")
                     with col_detail3:
-                        st.metric("Future Outcome", f"{match['future_change']:+.1f}%")
+                        st.metric("Future Prediction", f"{match['future_change']:+.1f}%")
                     
-                    # Combined chart showing pattern + future
-                    combined_data = pd.concat([match['pattern_data'], match['future_data']], ignore_index=True)
-                    
+                    # Combined chart showing historical pattern + its actual future
                     fig_match = go.Figure()
                     
                     # Historical pattern
@@ -1057,121 +1560,50 @@ with tab4:
                         high=match['pattern_data']['High'],
                         low=match['pattern_data']['Low'],
                         close=match['pattern_data']['Close'],
-                        increasing_line_color='green',
-                        decreasing_line_color='red',
+                        increasing=dict(
+                            line=dict(color='#00AA00', width=3),
+                            fillcolor='rgba(0, 170, 0, 0.7)'
+                        ),
+                        decreasing=dict(
+                            line=dict(color='#FF0000', width=3),
+                            fillcolor='rgba(255, 0, 0, 0.7)'
+                        ),
                         name="Historical Pattern"
                     ))
                     
-                    # Future outcome
+                    # Its actual future
                     fig_match.add_trace(go.Candlestick(
                         x=match['future_data']['Time'],
                         open=match['future_data']['Open'],
                         high=match['future_data']['High'],
                         low=match['future_data']['Low'],
                         close=match['future_data']['Close'],
-                        increasing_line_color='green',
-                        decreasing_line_color='red',
-                        name="Actual Future"
+                        increasing=dict(
+                            line=dict(color='#FFD700', width=3),
+                            fillcolor='rgba(255, 215, 0, 0.7)'
+                        ),
+                        decreasing=dict(
+                            line=dict(color='#FFA500', width=3),
+                            fillcolor='rgba(255, 165, 0, 0.7)'
+                        ),
+                        name="Actual Outcome"
                     ))
                     
                     fig_match.update_layout(
-                        height=350,
-                        title=f"Historical Match {i+1} + Actual Outcome",
+                        height=300,
+                        title=f"Historical Match {i+1}: Pattern → Actual Outcome",
                         xaxis_rangeslider_visible=False,
-                        margin=dict(l=10, r=10, t=40, b=10),
-                        showlegend=True
+                        margin=dict(l=20, r=20, t=40, b=20),
+                        showlegend=True,
+                        xaxis=dict(
+                            type='date',
+                            showgrid=True,
+                            gridcolor='rgba(128, 128, 128, 0.2)'
+                        ),
+                        yaxis=dict(
+                            showgrid=True,
+                            gridcolor='rgba(128, 128, 128, 0.2)'
+                        )
                     )
                     st.plotly_chart(fig_match, use_container_width=True)
-    
-    # Prediction accuracy assessment - moved outside but check if prediction data exists
-    if 'prediction_data' in st.session_state:
-        st.markdown("### 🧪 Test Prediction Model")
-        st.info("💡 This will test how well the current prediction model performs on historical data.")
-        
-        if st.button("🧪 Test Prediction Accuracy", key="test_accuracy"):
-            with st.spinner("Testing prediction accuracy on historical data..."):
-                try:
-                    # Get prediction data from session state
-                    pred_data = st.session_state.prediction_data
-                    avg_future_change = pred_data['avg_future_change']
-                    window_len = pred_data['window_len']
-                    future_candles_to_show = pred_data['future_candles_to_show']
-                    
-                    # Quick accuracy test on recent data
-                    test_sample_size = 10  # Reduced for faster testing
-                    
-                    # Get test data points - ensure we have enough data
-                    total_data_points = len(df)
-                    min_required = test_sample_size * (window_len + future_candles_to_show + 10)
-                    
-                    if total_data_points < min_required:
-                        st.warning(f"⚠️ Not enough data for accuracy testing. Need at least {min_required} data points, have {total_data_points}.")
-                    else:
-                        # Create test points with proper spacing
-                        start_idx = window_len
-                        end_idx = total_data_points - future_candles_to_show - 1
-                        step_size = max(1, (end_idx - start_idx) // test_sample_size)
-                        
-                        test_indices = list(range(start_idx, end_idx, step_size))[:test_sample_size]
-                        
-                        correct_predictions = 0
-                        total_predictions = 0
-                        
-                        # Progress tracking
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        
-                        for i, test_idx in enumerate(test_indices):
-                            progress_bar.progress((i + 1) / len(test_indices))
-                            status_text.text(f"Testing point {i+1}/{len(test_indices)}...")
-                            
-                            # Get test pattern and actual future
-                            test_pattern = df.iloc[test_idx-window_len:test_idx]
-                            actual_future = df.iloc[test_idx:test_idx+future_candles_to_show]
-                            
-                            if len(test_pattern) == window_len and len(actual_future) == future_candles_to_show:
-                                # Use the current prediction model's average direction
-                                predicted_direction = 1 if avg_future_change > 0 else -1
-                                
-                                # Calculate actual change
-                                actual_change = ((actual_future['Close'].iloc[-1] - test_pattern['Close'].iloc[-1]) / 
-                                               test_pattern['Close'].iloc[-1]) * 100
-                                actual_direction = 1 if actual_change > 0 else -1
-                                
-                                if predicted_direction == actual_direction:
-                                    correct_predictions += 1
-                                total_predictions += 1
-                        
-                        # Clean up progress indicators
-                        progress_bar.empty()
-                        status_text.empty()
-                        
-                        if total_predictions > 0:
-                            accuracy = (correct_predictions / total_predictions) * 100
-                            st.success(f"📊 **Historical Accuracy Test**: {accuracy:.1f}% ({correct_predictions}/{total_predictions} predictions correct)")
-                            
-                            # Show detailed results
-                            col_acc1, col_acc2, col_acc3 = st.columns(3)
-                            with col_acc1:
-                                st.metric("Accuracy", f"{accuracy:.1f}%")
-                            with col_acc2:
-                                st.metric("Correct", f"{correct_predictions}/{total_predictions}")
-                            with col_acc3:
-                                confidence = "High" if accuracy >= 70 else "Medium" if accuracy >= 55 else "Low"
-                                st.metric("Confidence", confidence)
-                            
-                            if accuracy >= 70:
-                                st.success("🎯 High confidence in prediction model!")
-                            elif accuracy >= 55:
-                                st.warning("⚠️ Moderate confidence - use with caution")
-                            else:
-                                st.error("🚨 Low confidence - consider different parameters")
-                        else:
-                            st.warning("❌ No valid test predictions could be made")
-                            
-                except Exception as e:
-                    st.error(f"❌ Error during accuracy testing: {str(e)}")
-                    st.info("💡 Try adjusting the pattern length or prediction horizon settings.")
-    else:
-        st.info("ℹ️ Generate AI predictions first to test accuracy.")
 
